@@ -49,9 +49,14 @@ class BertSelfAttention(nn.Module):
     # - Before returning, concatenate multi-heads to recover the original shape:
     #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
 
-    ### TODO
-    raise NotImplementedError
-
+    S = torch.matmul(query, torch.transpose(key, -1, -2)) / self.attention_head_size ** 0.5
+    S += attention_mask
+    alpha = torch.nn.functional.softmax(S, -1)  # [bs, n_head, len, len]
+    # (bs, n_head, len, len) (bs, n_head, len, d/n_head) = (bs, n_head, len, d/n_head)
+    head_attention = torch.matmul(alpha, value)
+    attention_raw = head_attention.transpose(1,2) # (bs, len, n_head, d/n_head)
+    attention = torch.flatten(attention_raw, -2)  # (bs, len, d)
+    return attention
 
   def forward(self, hidden_states, attention_mask):
     """
