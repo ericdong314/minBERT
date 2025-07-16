@@ -60,7 +60,18 @@ class AdamW(Optimizer):
                 # Refer to the default project handout for more details.
 
                 ### TODO
-                raise NotImplementedError
+                if len(state) == 0:
+                    state['t'] = 0
+                    state['m'] = torch.zeros_like(grad)
+                    state['v'] = torch.zeros_like(grad)
+                beta1, beta2 = group["betas"]
+                state['t'] += 1
+                state['m'].mul_(beta1).add_(grad, alpha=1 - beta1)
+                state['v'].mul_(beta2).add_(grad **2, alpha=1 - beta2)
+                alpha_t = alpha * (1 - beta2**state['t'])**0.5 / (1 - beta1**state['t'])
+                p.data -= alpha_t * state['m'] / (state['v'].sqrt() + group['eps'])
 
+                # Weight decay
+                p.data -= alpha * group['weight_decay'] * p.data
 
         return loss
