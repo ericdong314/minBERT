@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-conda create -n cs224n_dfp_bert python=3.8
-conda activate cs224n_dfp_bert
+conda create -n cs224n_dfp_bert_39 python=3.9
+conda activate cs224n_dfp_bert_39
 
 pip install torch torchvision torchaudio
 pip install tqdm==4.58.0

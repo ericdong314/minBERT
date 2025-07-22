@@ -147,7 +147,7 @@ def load_data(filename, flag='train'):
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()
                 data.append((sent,sent_id))
-    else:
+    else:  # flag in ['train', 'valid']
         with open(filename, 'r') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent = record['sentence'].lower().strip()
@@ -269,15 +269,15 @@ def train(args):
         train_loss = 0
         num_batches = 0
         for batch in tqdm(train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-            b_ids, b_mask, b_labels = (batch['token_ids'],
-                                       batch['attention_mask'], batch['labels'])
+            b_ids, b_mask, b_labels = (batch['token_ids'], # (batch_size, seq_len)
+                                       batch['attention_mask'], batch['labels']) # (batch_size,)
 
             b_ids = b_ids.to(device)
             b_mask = b_mask.to(device)
             b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
-            logits = model(b_ids, b_mask)
+            logits = model(b_ids, b_mask) # (batch_size, num_labels)
             loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
             loss.backward()
@@ -301,7 +301,7 @@ def train(args):
 def test(args):
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-        saved = torch.load(args.filepath)
+        saved = torch.load(args.filepath, map_location=device, weights_only=False)
         config = saved['model_config']
         model = BertSentimentClassifier(config)
         model.load_state_dict(saved['model'])
