@@ -117,13 +117,13 @@ class SentencePairDataset(Dataset):
         sent2 = [x[1] for x in data]
         labels = [x[2] for x in data]
         sent_ids = [x[3] for x in data]
-        if self.p.pair_tokenize:
+        if not self.p.siamese:
             encoding1 = self.tokenizer(sent1, sent2, return_tensors='pt', padding=True, truncation=True)
 
             token_ids = torch.LongTensor(encoding1['input_ids'])
             attention_mask = torch.LongTensor(encoding1['attention_mask'])
             token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
-            
+
             token_ids2, token_type_ids2, attention_mask2 = None, None, None
         else:
             encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
@@ -182,7 +182,7 @@ class SentencePairTestDataset(Dataset):
         sent2 = [x[1] for x in data]
         sent_ids = [x[2] for x in data]
 
-        if self.p.pair_tokenize:
+        if not self.p.siamese:
             encoding1 = self.tokenizer(sent1, sent2, return_tensors='pt', padding=True, truncation=True)
 
             token_ids = torch.LongTensor(encoding1['input_ids'])

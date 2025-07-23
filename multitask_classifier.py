@@ -76,8 +76,11 @@ class MultitaskBERT(nn.Module):
         self.num_labels = config.num_labels
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.sst_dense = torch.nn.Linear(config.hidden_size, self.num_labels)
-        self.para_dense = torch.nn.Linear(config.hidden_size * 2, 1)
-        self.sts_dense = torch.nn.Linear(config.hidden_size* 2, 1)
+        self.para_dense = torch.nn.Linear(config.hidden_size, 1)
+        self.para_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
+        self.sts_dense = torch.nn.Linear(config.hidden_size, 1)
+        self.sts_dense_siamese = torch.nn.Linear(config.hidden_size* 2, 1)
+        self.siamese = config.siamese
 
 
     def forward(self, input_ids, attention_mask):
@@ -109,14 +112,16 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        # Get [CLS] embeddings for both sentences
-        pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
-        pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
-        # Concatenate the embeddings
-        concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
-        # Apply dropout and linear layer
-        out = self.para_dense(self.dropout(concat))
-        return out.squeeze(-1)
+        if not self.siamese:
+            pooler_output = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+            return self.para_dense(self.dropout(pooler_output)).squeeze(-1)
+        else:
+            # Get [CLS] embeddings for both sentences
+            pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+            pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
+            # Concatenate the embeddings
+            concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+            return self.para_dense_siamese(self.dropout(concat)).squeeze(-1)
 
 
     def predict_similarity(self,
@@ -126,16 +131,17 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit).
         '''
         ### TODO
-        # Get [CLS] embeddings for both sentences
-        pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
-        pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
-        # Concatenate the embeddings
-        concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
-        # Define the similarity head if not already defined
-        # Apply dropout and linear layer
-        out = self.sts_dense(self.dropout(concat))
-        
-        return out.squeeze(-1)
+        if not self.siamese:
+            pooler_output = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+            return self.sts_dense(self.dropout(pooler_output)).squeeze(-1)
+        else:
+            # Get [CLS] embeddings for both sentences
+            pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+            pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
+            # Concatenate the embeddings
+            concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+            return self.sts_dense_siamese(self.dropout(concat)).squeeze(-1)
+
 
 
 
@@ -194,7 +200,8 @@ def train_multitask(args):
               'num_labels': num_labels,
               'hidden_size': 768,
               'data_dir': '.',
-              'fine_tune_mode': args.fine_tune_mode}
+              'fine_tune_mode': args.fine_tune_mode,
+              'siamese': args.siamese}
 
     config = SimpleNamespace(**config)
 
@@ -363,7 +370,7 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # new args
-    parser.add_argument('--pair_tokenize', action='store_true')
+    parser.add_argument('--siamese', action='store_true')
 
     args = parser.parse_args()
     return args
@@ -371,7 +378,8 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    siamese = 'siamese'if args.siamese else 'concate'
+    args.filepath = f'{siamese}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     train_multitask(args)
     test_multitask(args)
