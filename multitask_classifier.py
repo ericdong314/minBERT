@@ -73,7 +73,11 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
-        raise NotImplementedError
+        self.num_labels = config.num_labels
+        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        self.sst_dense = torch.nn.Linear(config.hidden_size, self.num_labels)
+        self.para_dense = torch.nn.Linear(config.hidden_size * 2, 1)
+        self.sts_dense = torch.nn.Linear(config.hidden_size* 2, 1)
 
 
     def forward(self, input_ids, attention_mask):
@@ -83,7 +87,7 @@ class MultitaskBERT(nn.Module):
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
         ### TODO
-        raise NotImplementedError
+        return self.bert(input_ids, attention_mask)
 
 
     def predict_sentiment(self, input_ids, attention_mask):
@@ -93,7 +97,8 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        raise NotImplementedError
+        pooler_output = self.forward(input_ids, attention_mask)['pooler_output']
+        return self.sst_dense(self.dropout(pooler_output))
 
 
     def predict_paraphrase(self,
@@ -104,7 +109,14 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        raise NotImplementedError
+        # Get [CLS] embeddings for both sentences
+        pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+        pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
+        # Concatenate the embeddings
+        concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+        # Apply dropout and linear layer
+        out = self.para_dense(self.dropout(concat))
+        return out.squeeze(-1)
 
 
     def predict_similarity(self,
@@ -114,8 +126,16 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit).
         '''
         ### TODO
-        raise NotImplementedError
-
+        # Get [CLS] embeddings for both sentences
+        pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
+        pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
+        # Concatenate the embeddings
+        concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+        # Define the similarity head if not already defined
+        # Apply dropout and linear layer
+        out = self.sts_dense(self.dropout(concat))
+        
+        return out.squeeze(-1)
 
 
 
@@ -145,15 +165,29 @@ def train_multitask(args):
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
-    sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
+    sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
 
-    sst_train_data = SentenceClassificationDataset(sst_train_data, args)
-    sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
+    sst_train_dataset = SentenceClassificationDataset(sst_train_data, args)
+    para_train_dataset = SentencePairDataset(para_train_data, args, isRegression=False)
+    sts_train_dataset = SentencePairDataset(sts_train_data, args, isRegression=True)
 
-    sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
+    sst_dev_dataset = SentenceClassificationDataset(sst_dev_data, args)
+    para_dev_dataset = SentencePairDataset(para_dev_data, args, isRegression=False)
+    sts_dev_dataset = SentencePairDataset(sts_dev_data, args, isRegression=True)
+
+    sst_train_dataloader = DataLoader(sst_train_dataset, shuffle=True, batch_size=args.batch_size,
                                       collate_fn=sst_train_data.collate_fn)
-    sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
+    para_train_dataloader = DataLoader(para_train_dataset, shuffle=True, batch_size=args.batch_size,
+                                      collate_fn=para_train_data.collate_fn)
+    sts_train_dataloader = DataLoader(sts_train_dataset, shuffle=True, batch_size=args.batch_size,
+                                      collate_fn=sts_train_data.collate_fn)
+
+    sst_dev_dataloader = DataLoader(sst_dev_dataset, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sst_dev_data.collate_fn)
+    para_dev_dataloader = DataLoader(para_dev_dataset, shuffle=False, batch_size=args.batch_size,
+                                    collate_fn=para_dev_data.collate_fn)
+    sts_dev_dataloader = DataLoader(sts_dev_dataset, shuffle=False, batch_size=args.batch_size,
+                                    collate_fn=sts_dev_data.collate_fn)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -210,7 +244,7 @@ def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-        saved = torch.load(args.filepath)
+        saved = torch.load(args.filepath, weights_only=False)
         config = saved['model_config']
 
         model = MultitaskBERT(config)
@@ -327,6 +361,9 @@ def get_args():
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+
+    # new args
+    parser.add_argument('--pair_tokenize', action='store_true')
 
     args = parser.parse_args()
     return args

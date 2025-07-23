@@ -117,17 +117,25 @@ class SentencePairDataset(Dataset):
         sent2 = [x[1] for x in data]
         labels = [x[2] for x in data]
         sent_ids = [x[3] for x in data]
+        if self.p.pair_tokenize:
+            encoding1 = self.tokenizer(sent1, sent2, return_tensors='pt', padding=True, truncation=True)
 
-        encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
-        encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
+            token_ids = torch.LongTensor(encoding1['input_ids'])
+            attention_mask = torch.LongTensor(encoding1['attention_mask'])
+            token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
+            
+            token_ids2, token_type_ids2, attention_mask2 = None, None, None
+        else:
+            encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
+            encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
 
-        token_ids = torch.LongTensor(encoding1['input_ids'])
-        attention_mask = torch.LongTensor(encoding1['attention_mask'])
-        token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
+            token_ids = torch.LongTensor(encoding1['input_ids'])
+            attention_mask = torch.LongTensor(encoding1['attention_mask'])
+            token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
 
-        token_ids2 = torch.LongTensor(encoding2['input_ids'])
-        attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
-        token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
+            token_ids2 = torch.LongTensor(encoding2['input_ids'])
+            attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
+            token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
         if self.isRegression:
             labels = torch.DoubleTensor(labels)
         else:
@@ -174,16 +182,25 @@ class SentencePairTestDataset(Dataset):
         sent2 = [x[1] for x in data]
         sent_ids = [x[2] for x in data]
 
-        encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
-        encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
+        if self.p.pair_tokenize:
+            encoding1 = self.tokenizer(sent1, sent2, return_tensors='pt', padding=True, truncation=True)
 
-        token_ids = torch.LongTensor(encoding1['input_ids'])
-        attention_mask = torch.LongTensor(encoding1['attention_mask'])
-        token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
+            token_ids = torch.LongTensor(encoding1['input_ids'])
+            attention_mask = torch.LongTensor(encoding1['attention_mask'])
+            token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
 
-        token_ids2 = torch.LongTensor(encoding2['input_ids'])
-        attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
-        token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
+            token_ids2, token_type_ids2, attention_mask2 = None, None, None
+        else:
+            encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
+            encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
+
+            token_ids = torch.LongTensor(encoding1['input_ids'])
+            attention_mask = torch.LongTensor(encoding1['attention_mask'])
+            token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
+
+            token_ids2 = torch.LongTensor(encoding2['input_ids'])
+            attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
+            token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
 
 
         return (token_ids, token_type_ids, attention_mask,
