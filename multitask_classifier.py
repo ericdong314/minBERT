@@ -229,6 +229,7 @@ def train_multitask(args):
             if b_ids2 and b_mask2:
                 b_ids2 = b_ids2.to(device)
                 b_mask2 = b_mask2.to(device)
+            b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
             logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
@@ -261,6 +262,7 @@ def train_multitask(args):
             if b_ids2 and b_mask2:
                 b_ids2 = b_ids2.to(device)
                 b_mask2 = b_mask2.to(device)
+            b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
             logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
