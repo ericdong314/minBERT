@@ -286,4 +286,4 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
 
     print(f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
 
-    return sentiment_data, num_labels, paraphrase_data, similarity_data
+    return sentiment_data, len(num_labels), paraphrase_data, similarity_data
