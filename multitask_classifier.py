@@ -226,9 +226,8 @@ def train_multitask(args):
 
             b_ids1 = b_ids1.to(device)
             b_mask1 = b_mask1.to(device)
-            if b_ids2 and b_mask2:
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
+            b_ids2 = b_ids2.to(device)
+            b_mask2 = b_mask2.to(device)
             b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
@@ -259,9 +258,8 @@ def train_multitask(args):
 
             b_ids1 = b_ids1.to(device)
             b_mask1 = b_mask1.to(device)
-            if b_ids2 and b_mask2:
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
+            b_ids2 = b_ids2.to(device)
+            b_mask2 = b_mask2.to(device)
             b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
@@ -431,7 +429,7 @@ def get_args():
 
     # new args
     parser.add_argument('--siamese', action='store_true')
-
+    parser.add_argument('--test_only', action='store_true')
     args = parser.parse_args()
     return args
 
@@ -441,5 +439,6 @@ if __name__ == "__main__":
     siamese = 'siamese'if args.siamese else 'concate'
     args.filepath = f'{siamese}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
+    if not args.test_only:
+        train_multitask(args)
     test_multitask(args)

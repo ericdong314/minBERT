@@ -124,7 +124,9 @@ class SentencePairDataset(Dataset):
             attention_mask = torch.LongTensor(encoding1['attention_mask'])
             token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
 
-            token_ids2, token_type_ids2, attention_mask2 = None, None, None
+            token_ids2 = torch.tensor(False)
+            attention_mask2 = torch.tensor(False)
+            token_type_ids2 = torch.tensor(False)
         else:
             encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
             encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
@@ -189,7 +191,9 @@ class SentencePairTestDataset(Dataset):
             attention_mask = torch.LongTensor(encoding1['attention_mask'])
             token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
 
-            token_ids2, token_type_ids2, attention_mask2 = None, None, None
+            token_ids2 = torch.tensor(False)
+            attention_mask2 = torch.tensor(False)
+            token_type_ids2 = torch.tensor(False)
         else:
             encoding1 = self.tokenizer(sent1, return_tensors='pt', padding=True, truncation=True)
             encoding2 = self.tokenizer(sent2, return_tensors='pt', padding=True, truncation=True)
