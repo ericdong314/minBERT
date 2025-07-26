@@ -238,7 +238,7 @@ def train_multitask(args):
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
         probs = get_task_probs(alpha, np.array([len(dataset) for dataset in datasets]))
         num_steps = 300_000//args.batch_size
-        num_steps = 100
+        num_steps = 10000
         for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
             task_id = np.random.choice(task_ids, p=probs)
             batch = next(loaders[task_id])
