@@ -20,6 +20,7 @@ from sympy.utilities.iterables import iterable
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.tensorboard import SummaryWriter
 
 from bert import BertModel
 from optimizer import AdamW
@@ -210,9 +211,9 @@ def train_multitask(args):
 
     task_ids = ['sst', 'para', 'sts']
     datasets = [sst_train_dataset, para_train_dataset, sts_train_dataset]
-    loaders = [DataLoader(dataset, sampler=RandomSampler(dataset), batch_size=args.batch_size,
+    loaders_orig = [DataLoader(dataset, sampler=RandomSampler(dataset), batch_size=args.batch_size,
                           collate_fn=dataset.collate_fn) for dataset in datasets]
-    loaders = [iter(cycle(loader)) for loader in loaders]  # infinitely iterable iterators
+    loaders = [iter(cycle(loader)) for loader in loaders_orig]  # infinitely iterable iterators
     loaders = dict(zip(task_ids, loaders))
 
     # Init model.
@@ -228,6 +229,7 @@ def train_multitask(args):
     model = MultitaskBERT(config)
     model = model.to(device)
     model.train()
+    writer = SummaryWriter()
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -237,6 +239,8 @@ def train_multitask(args):
         model.train()
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
         probs = get_task_probs(alpha, np.array([len(dataset) for dataset in datasets]))
+        writer.add_scalars("Sampling Prob", dict(zip(task_ids, probs)), epoch)
+
         num_steps = 300_000//args.batch_size
         num_steps = 10000
         for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
@@ -281,19 +285,27 @@ def train_multitask(args):
                 loss.backward()
                 optimizer.step()
 
-        dev_sentiment_accuracy, dev_sst_y_pred, dev_sst_sent_ids, \
-            dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
-            dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,para_dev_dataloader,sts_dev_dataloader,model,device)
+        train_sentiment_accuracy, _, _, \
+            train_paraphrase_accuracy, _, _, \
+            train_sts_corr, _, _ = model_eval_multitask(loaders_orig[0], loaders_orig[1], loaders_orig[2], model, device)
+        dev_sentiment_accuracy, _, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,para_dev_dataloader,sts_dev_dataloader,model,device)
 
         avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
+        avg_train_acc = (train_sentiment_accuracy + train_paraphrase_accuracy + train_sts_corr) / 3
         if avg_dev_acc > best_avg_dev_acc:
             best_avg_dev_acc = avg_dev_acc
             save_model(model, optimizer, args, config, args.filepath)
+        train_acc = {'sst':train_sentiment_accuracy, 'para': train_paraphrase_accuracy, 'sts': train_sts_corr, 'avg': avg_train_acc}
+        dev_acc = {'sst':dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr, 'avg': avg_dev_acc}
+        writer.add_scalars('train acc', train_acc, epoch)
+        writer.add_scalars('dev acc', dev_acc, epoch)
         print(f"Epoch {epoch}:  dev acc - "
               f"sst::{dev_sentiment_accuracy :.3f}, "
               f"para::{dev_paraphrase_accuracy :.3f}, "
-              f"sts::{dev_sts_corr :.3f}")
-
+              f"sts::{dev_sts_corr :.3f}" 
+              f"avg::{avg_dev_acc :.3f}")
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
