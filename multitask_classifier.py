@@ -56,17 +56,47 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
-class Dic:
-    def __init__(self, **kwargs):
-        for k, v in kwargs:
-            self.k = v
 
-    def __getattr__(self, name):
-        setattr(self, name, Dic())
-        return getattr(self, name)
+def cycle(iterable):
+    while True:
+        for it in iterable:
+            yield it
 
-    def __repr__(self):
-        return repr(self.__dict__)
+class Task:
+    names = []
+    tasks = []
+    dataset_class = {
+        'sst': SentenceClassificationDataset,
+        'para': lambda x, y: SentencePairDataset(x, y, isRegression=False),
+        'sts': lambda x, y: SentencePairDataset(x, y, isRegression=True)
+    }
+
+    def __init__(self, name, args):
+        self.name = name
+        self.train = Task.DataBox()
+        self.dev = Task.DataBox()
+        self.dataset_class = None
+        self.step_counter = 0
+
+
+        Task.names.append(name)
+        Task.tasks.append(self)
+
+    def load_data(self):
+        self.train.dataset = Task.dataset_class[self.name](self.train.data, args)
+        self.dev.dataset = Task.dataset_class[self.name](self.dev.data, args)
+        self.dev.dataloader = DataLoader(self.dev.dataset, shuffle=False, batch_size=args.batch_size,
+                                         collate_fn=self.dev.dataset.collate_fn)
+        self.train.dataloader = DataLoader(self.train.dataset, sampler=RandomSampler(self.train.dataset),
+                                           batch_size=args.batch_size, collate_fn=self.train.dataset.collate_fn)
+        self.train.inf_loader = iter(cycle(self.train.dataloader))
+
+    class DataBox:
+        def __init__(self):
+            self.data = None
+            self.dataset = None
+            self.dataloader = None
+            self.inf_loader = None
 
 
 class MultitaskBERT(nn.Module):
@@ -184,11 +214,6 @@ def train_multitask(args):
     look at test_multitask below to see how you can use the custom torch `Dataset`s
     in datasets.py to load in examples from the Quora and SemEval datasets.
     '''
-    def cycle(iterable):
-        while True:
-            for it in iterable:
-                yield it
-
     def compute_alpha(epoch, total_epoch, alpha_start=1.0, alpha_end=0.2, linear_decay=True):
         """Annealing of alpha from alpha_start to alpha_end."""
         assert 0 <= epoch < total_epoch
@@ -205,29 +230,12 @@ def train_multitask(args):
         return scaled / scaled.sum()
 
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    sst = Dic(name='sst')
-    para = Dic(name='para')
-    sts = Dic(name='sts')
-    tasks = [sst, para, sts]
-    task_names = [t.name for t in tasks]
-    # Create the data and its corresponding datasets and dataloader.
+    sst = Task('sst', args)
+    para = Task('para', args)
+    sts = Task('sts', args)
     sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
     sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
-
-    sst.dataset_class = SentenceClassificationDataset
-    para.dataset_class = lambda x,y: SentencePairDataset(x,y,isRegression=False)
-    sts.dataset_class = lambda x,y: SentencePairDataset(x,y,isRegression=True)
-
-    for task in tasks:
-        task.dev.dataset = task.dataset_class(task.dev.data, args)
-        task.train.dataset = task.dataset_class(task.train.data, args)
-        task.dev.dataloader = DataLoader(task.dev.dataset, shuffle=False, batch_size=args.batch_size,
-                                        collate_fn=task.dev.data.collate_fn)
-        task.train.dataloader = DataLoader(task.train.dataset, sampler=RandomSampler(task.train.dataset), batch_size=args.batch_size,
-                               collate_fn=task.train.dataset.collate_fn)
-
-    inf_loaders = [iter(cycle(task.train.dataloader)) for task in tasks]  # infinitely iterable iterators
-    inf_loaders = dict(zip(task_names, inf_loaders))
+    for t in Task.tasks: t.load_data()
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -251,16 +259,15 @@ def train_multitask(args):
     for epoch in range(args.epochs):
         model.train()
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
-        probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tasks]))
-        writer.add_scalars("Sampling Prob", dict(zip(task_names, probs)), epoch)
+        probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in Task.tasks]))
+        writer.add_scalars("Sampling Prob", dict(zip(Task.names, probs)), epoch)
 
-        num_steps = 300_000//args.batch_size
-        num_steps = 10000
-        step_counter = 0
+        num_steps = sum([len(t.train.dataset) for t in Task.tasks])//args.batch_size # one pass through all the data (37,198)
+        # num_steps = 10000
         for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
-            task_name = np.random.choice(task_names, p=probs)
-            batch = next(inf_loaders[task_name])
-            if task_name in ['sts', 'para']:
+            task = np.random.choice(Task.tasks, p=probs)
+            batch = next(task.train.inf_loader)
+            if task.name in ['sts', 'para']:
                 (b_ids1, b_mask1,
                  b_ids2, b_mask2,
                  b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
@@ -274,7 +281,7 @@ def train_multitask(args):
                 b_labels = b_labels.to(device)
 
                 optimizer.zero_grad()
-                if task_name == 'sts':
+                if task.name == 'sts':
                     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
                     loss = F.mse_loss(logits, b_labels.float(), reduction='mean')
 
@@ -298,11 +305,7 @@ def train_multitask(args):
 
                 loss.backward()
                 optimizer.step()
-            step_counter += 1
 
-        sst = SimpleNamespace(num_batches=0, epoch_total_loss=0)
-        para = SimpleNamespace(num_batches=0, epoch_total_loss=0)
-        sts = SimpleNamespace(num_batches=0, epoch_total_loss=0) # maybe create a dummy class to group information 
         # epoch_loss = epoch_total_loss / num_batches
         # writer.add_scalar("Loss/train_epoch", epoch_loss, epoch)
 
