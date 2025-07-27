@@ -13,7 +13,9 @@ writes all required submission files.
 '''
 
 import random, numpy as np, argparse
+from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 from sympy.utilities.iterables import iterable
@@ -53,6 +55,18 @@ def seed_everything(seed=11711):
 
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
+
+class Dic:
+    def __init__(self, **kwargs):
+        for k, v in kwargs:
+            self.k = v
+
+    def __getattr__(self, name):
+        setattr(self, name, Dic())
+        return getattr(self, name)
+
+    def __repr__(self):
+        return repr(self.__dict__)
 
 
 class MultitaskBERT(nn.Module):
@@ -191,30 +205,29 @@ def train_multitask(args):
         return scaled / scaled.sum()
 
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+    sst = Dic(name='sst')
+    para = Dic(name='para')
+    sts = Dic(name='sts')
+    tasks = [sst, para, sts]
+    task_names = [t.name for t in tasks]
     # Create the data and its corresponding datasets and dataloader.
-    sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
-    sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
+    sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
+    sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
 
-    sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
-    sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn)
-    para_dev_data = SentencePairDataset(para_dev_data, args)
-    para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                     collate_fn=para_dev_data.collate_fn)
-    sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
-    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sts_dev_data.collate_fn)
+    sst.dataset_class = SentenceClassificationDataset
+    para.dataset_class = lambda x,y: SentencePairDataset(x,y,isRegression=False)
+    sts.dataset_class = lambda x,y: SentencePairDataset(x,y,isRegression=True)
 
-    sst_train_dataset = SentenceClassificationDataset(sst_train_data, args)
-    para_train_dataset = SentencePairDataset(para_train_data, args, isRegression=False)
-    sts_train_dataset = SentencePairDataset(sts_train_data, args, isRegression=True)
+    for task in tasks:
+        task.dev.dataset = task.dataset_class(task.dev.data, args)
+        task.train.dataset = task.dataset_class(task.train.data, args)
+        task.dev.dataloader = DataLoader(task.dev.dataset, shuffle=False, batch_size=args.batch_size,
+                                        collate_fn=task.dev.data.collate_fn)
+        task.train.dataloader = DataLoader(task.train.dataset, sampler=RandomSampler(task.train.dataset), batch_size=args.batch_size,
+                               collate_fn=task.train.dataset.collate_fn)
 
-    task_ids = ['sst', 'para', 'sts']
-    datasets = [sst_train_dataset, para_train_dataset, sts_train_dataset]
-    loaders_orig = [DataLoader(dataset, sampler=RandomSampler(dataset), batch_size=args.batch_size,
-                          collate_fn=dataset.collate_fn) for dataset in datasets]
-    loaders = [iter(cycle(loader)) for loader in loaders_orig]  # infinitely iterable iterators
-    loaders = dict(zip(task_ids, loaders))
+    inf_loaders = [iter(cycle(task.train.dataloader)) for task in tasks]  # infinitely iterable iterators
+    inf_loaders = dict(zip(task_names, inf_loaders))
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -238,15 +251,16 @@ def train_multitask(args):
     for epoch in range(args.epochs):
         model.train()
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
-        probs = get_task_probs(alpha, np.array([len(dataset) for dataset in datasets]))
-        writer.add_scalars("Sampling Prob", dict(zip(task_ids, probs)), epoch)
+        probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tasks]))
+        writer.add_scalars("Sampling Prob", dict(zip(task_names, probs)), epoch)
 
         num_steps = 300_000//args.batch_size
         num_steps = 10000
+        step_counter = 0
         for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
-            task_id = np.random.choice(task_ids, p=probs)
-            batch = next(loaders[task_id])
-            if task_id in ['sts', 'para']:
+            task_name = np.random.choice(task_names, p=probs)
+            batch = next(inf_loaders[task_name])
+            if task_name in ['sts', 'para']:
                 (b_ids1, b_mask1,
                  b_ids2, b_mask2,
                  b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
@@ -260,7 +274,7 @@ def train_multitask(args):
                 b_labels = b_labels.to(device)
 
                 optimizer.zero_grad()
-                if task_id == 'sts':
+                if task_name == 'sts':
                     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
                     loss = F.mse_loss(logits, b_labels.float(), reduction='mean')
 
@@ -284,13 +298,20 @@ def train_multitask(args):
 
                 loss.backward()
                 optimizer.step()
+            step_counter += 1
+
+        sst = SimpleNamespace(num_batches=0, epoch_total_loss=0)
+        para = SimpleNamespace(num_batches=0, epoch_total_loss=0)
+        sts = SimpleNamespace(num_batches=0, epoch_total_loss=0) # maybe create a dummy class to group information 
+        # epoch_loss = epoch_total_loss / num_batches
+        # writer.add_scalar("Loss/train_epoch", epoch_loss, epoch)
 
         train_sentiment_accuracy, _, _, \
             train_paraphrase_accuracy, _, _, \
-            train_sts_corr, _, _ = model_eval_multitask(loaders_orig[0], loaders_orig[1], loaders_orig[2], model, device)
+            train_sts_corr, _, _ = model_eval_multitask(sst.train.dataloader, para.train.dataloader, sts.train.dataloader, model, device)
         dev_sentiment_accuracy, _, _, \
             dev_paraphrase_accuracy, _, _, \
-            dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,para_dev_dataloader,sts_dev_dataloader,model,device)
+            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,model,device)
 
         avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
         avg_train_acc = (train_sentiment_accuracy + train_paraphrase_accuracy + train_sts_corr) / 3
