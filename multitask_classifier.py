@@ -11,7 +11,9 @@ Of note are:
 Running `python multitask_classifier.py` trains and tests your MultitaskBERT and
 writes all required submission files.
 '''
-
+import os
+from datetime import datetime
+import json
 import random, numpy as np, argparse
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -62,34 +64,67 @@ def cycle(iterable):
         for it in iterable:
             yield it
 
-class Task:
-    names = []
-    tasks = []
-    dataset_class = {
-        'sst': SentenceClassificationDataset,
-        'para': lambda x, y: SentencePairDataset(x, y, isRegression=False),
-        'sts': lambda x, y: SentencePairDataset(x, y, isRegression=True)
-    }
+class TaskCenter:
+    def __init__(self):
+        self.names = []
+        self.tasks = []
+        self.name_to_task = dict()
+        self.dataset_class = {
+            'sst': SentenceClassificationDataset,
+            'para': lambda x, y: SentencePairDataset(x, y, isRegression=False),
+            'sts': lambda x, y: SentencePairDataset(x, y, isRegression=True)
+        }
+        self.avg_train_acc = []  # wrt epoch
+        self.avg_dev_acc = []  # wrt epoch
 
-    def __init__(self, name, args):
+    def log_accuracy(self, train_acc, avg_train_acc, dev_acc, avg_dev_acc):
+        for name, acc in train_acc.items():
+            self.name_to_task[name].train_acc.append(acc)
+        self.avg_train_acc.append(avg_train_acc)
+
+        for name, acc in dev_acc.items():
+            self.name_to_task[name].dev_acc.append(acc)
+        self.avg_dev_acc.append(avg_dev_acc)
+
+    def save_metrics(self):
+        attrs = ['sampling_probs', 'steps_in_epoch', 'train_acc', 'dev_acc']
+        tc_attrs = ['avg_train_acc', 'avg_dev_acc']
+        task_metrics = {task.name : {attr: getattr(task, attr) for attr in attrs} for task in self.tasks}
+        overall_metrics = {attr: getattr(self, attr) for attr in tc_attrs}
+
+        os.makedirs("./metrics", exist_ok=True)
+        with open(f'./metrics/{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding="utf-8") as f:
+            json.dump({'task_metrics': task_metrics, 'overall_metrics': overall_metrics}, f)
+
+class Task:
+    def __init__(self, tc, name):
+        self.tc = tc
         self.name = name
         self.train = Task.DataBox()
         self.dev = Task.DataBox()
         self.dataset_class = None
+
         self.step_counter = 0
+        self.sampling_probs = []
+        self.steps_in_epoch = []
+        self.train_acc = []
+        self.dev_acc = []
 
 
-        Task.names.append(name)
-        Task.tasks.append(self)
+        self.tc.names.append(name)
+        self.tc.tasks.append(self)
+        self.tc.name_to_task[name] = self
 
     def load_data(self):
-        self.train.dataset = Task.dataset_class[self.name](self.train.data, args)
-        self.dev.dataset = Task.dataset_class[self.name](self.dev.data, args)
+        self.train.dataset = self.tc.dataset_class[self.name](self.train.data, args)
+        self.dev.dataset = self.tc.dataset_class[self.name](self.dev.data, args)
         self.dev.dataloader = DataLoader(self.dev.dataset, shuffle=False, batch_size=args.batch_size,
                                          collate_fn=self.dev.dataset.collate_fn)
         self.train.dataloader = DataLoader(self.train.dataset, sampler=RandomSampler(self.train.dataset),
                                            batch_size=args.batch_size, collate_fn=self.train.dataset.collate_fn)
         self.train.inf_loader = iter(cycle(self.train.dataloader))
+
+
 
     class DataBox:
         def __init__(self):
@@ -230,12 +265,13 @@ def train_multitask(args):
         return scaled / scaled.sum()
 
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    sst = Task('sst', args)
-    para = Task('para', args)
-    sts = Task('sts', args)
-    sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
-    sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='dev')
-    for t in Task.tasks: t.load_data()
+    tc = TaskCenter()
+    sst = Task(tc, 'sst')
+    para = Task(tc, 'para')
+    sts = Task(tc, 'sts')
+    sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, args.test_run, split ='train')
+    sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, args.test_run, split ='dev')
+    for t in tc.tasks: t.load_data()
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -250,22 +286,23 @@ def train_multitask(args):
     model = MultitaskBERT(config)
     model = model.to(device)
     model.train()
-    writer = SummaryWriter()
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
     best_avg_dev_acc = 0
 
-    for epoch in range(args.epochs):
+    for epoch in range(3 if args.test_run else args.epochs):
         model.train()
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
-        probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in Task.tasks]))
-        writer.add_scalars("Sampling Prob", dict(zip(Task.names, probs)), epoch)
+        probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tc.tasks]))
+        for t,p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
-        num_steps = sum([len(t.train.dataset) for t in Task.tasks])//args.batch_size # one pass through all the data (37,198)
-        # num_steps = 10000
+        # num_steps = sum([len(t.train.dataset) for t in tc.tasks])//args.batch_size # one pass through all the data (37,198)
+        num_steps = 6 if args.test_run else 10_000
+        for t in tc.tasks: t.step_counter = 0
         for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
-            task = np.random.choice(Task.tasks, p=probs)
+            task = np.random.choice(tc.tasks, p=probs)
+            task.step_counter += 1
             batch = next(task.train.inf_loader)
             if task.name in ['sts', 'para']:
                 (b_ids1, b_mask1,
@@ -305,9 +342,7 @@ def train_multitask(args):
 
                 loss.backward()
                 optimizer.step()
-
-        # epoch_loss = epoch_total_loss / num_batches
-        # writer.add_scalar("Loss/train_epoch", epoch_loss, epoch)
+        for t in tc.tasks: t.steps_in_epoch.append(t.step_counter)
 
         train_sentiment_accuracy, _, _, \
             train_paraphrase_accuracy, _, _, \
@@ -321,15 +356,21 @@ def train_multitask(args):
         if avg_dev_acc > best_avg_dev_acc:
             best_avg_dev_acc = avg_dev_acc
             save_model(model, optimizer, args, config, args.filepath)
-        train_acc = {'sst':train_sentiment_accuracy, 'para': train_paraphrase_accuracy, 'sts': train_sts_corr, 'avg': avg_train_acc}
-        dev_acc = {'sst':dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr, 'avg': avg_dev_acc}
-        writer.add_scalars('train acc', train_acc, epoch)
-        writer.add_scalars('dev acc', dev_acc, epoch)
+        train_acc = {'sst':train_sentiment_accuracy, 'para': train_paraphrase_accuracy, 'sts': train_sts_corr}
+        dev_acc = {'sst':dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
+        tc.log_accuracy(train_acc, avg_train_acc, dev_acc, avg_dev_acc)
+
+        print(f"Epoch {epoch}:  train acc - "
+              f"sst::{train_sentiment_accuracy :.3f}, "
+              f"para::{train_paraphrase_accuracy :.3f}, "
+              f"sts::{train_sts_corr :.3f}"
+              f"avg::{avg_train_acc :.3f}")
         print(f"Epoch {epoch}:  dev acc - "
               f"sst::{dev_sentiment_accuracy :.3f}, "
               f"para::{dev_paraphrase_accuracy :.3f}, "
               f"sts::{dev_sts_corr :.3f}" 
               f"avg::{avg_dev_acc :.3f}")
+    tc.save_metrics()
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -344,10 +385,10 @@ def test_multitask(args):
         print(f"Loaded model to test from {args.filepath}")
 
         sst_test_data, num_labels,para_test_data, sts_test_data = \
-            load_multitask_data(args.sst_test,args.para_test, args.sts_test, split='test')
+            load_multitask_data(args.sst_test,args.para_test, args.sts_test, args.test_run, split='test')
 
         sst_dev_data, num_labels,para_dev_data, sts_dev_data = \
-            load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev,split='dev')
+            load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, args.test_run, split='dev')
 
         sst_test_data = SentenceClassificationTestDataset(sst_test_data, args)
         sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -454,8 +495,9 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # new args
-    parser.add_argument('--siamese', action='store_true')
-    parser.add_argument('--test_only', action='store_true')
+    parser.add_argument('--siamese', action='store_true', help='use siamese network instead of cat')
+    parser.add_argument('--test_only', action='store_true' , help='skip training')
+    parser.add_argument('--test_run', action='store_true', help='skeletal run for local test')
     args = parser.parse_args()
     return args
 
@@ -464,7 +506,6 @@ if __name__ == "__main__":
     args = get_args()
     siamese = 'siamese'if args.siamese else 'concate'
     args.filepath = f'{siamese}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
-    seed_everything(args.seed)  # Fix the seed for reproducibility.
-    if not args.test_only:
-        train_multitask(args)
+    # seed_everything(args.seed)  # Fix the seed for reproducibility.
+    if not args.test_only: train_multitask(args)
     test_multitask(args)

@@ -229,7 +229,7 @@ class SentencePairTestDataset(Dataset):
         return batched_data
 
 
-def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filename,split='train'):
+def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filename,test_run=False,split='train'):
     sentiment_data = []
     num_labels = {}
     if split == 'test':
@@ -290,4 +290,7 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
 
     print(f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
 
-    return sentiment_data, len(num_labels), paraphrase_data, similarity_data
+    if test_run:
+        return sentiment_data[:16], len(num_labels), paraphrase_data[:16], similarity_data[:16]
+    else:
+        return sentiment_data, len(num_labels), paraphrase_data, similarity_data
