@@ -297,10 +297,11 @@ def train_multitask(args):
         probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tc.tasks]))
         for t,p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
-        # num_steps = sum([len(t.train.dataset) for t in tc.tasks])//args.batch_size # one pass through all the data (37,198)
-        num_steps = 6 if args.test_run else 10_000
+        steps_e = sum([len(t.train.dataset) for t in tc.tasks])//args.batch_size # one pass through all the data
+        steps_per_epoch = 6 if args.test_run else steps_e // 8
+
         for t in tc.tasks: t.step_counter = 0
-        for step in tqdm(range(num_steps), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
+        for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
             task.step_counter += 1
             batch = next(task.train.inf_loader)
@@ -490,13 +491,12 @@ def get_args():
     parser.add_argument("--sts_dev_out", type=str, default="predictions/sts-dev-output.csv")
     parser.add_argument("--sts_test_out", type=str, default="predictions/sts-test-output.csv")
 
-    parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
+    parser.add_argument("--batch_size", help='sst: 64 can fit a 12GB GPU', type=int, default=32)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # new args
     parser.add_argument('--siamese', action='store_true', help='use siamese network instead of cat')
-    parser.add_argument('--test_only', action='store_true' , help='skip training')
     parser.add_argument('--test_run', action='store_true', help='skeletal run for local test')
     args = parser.parse_args()
     return args
@@ -506,6 +506,5 @@ if __name__ == "__main__":
     args = get_args()
     siamese = 'siamese'if args.siamese else 'concate'
     args.filepath = f'{siamese}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
-    # seed_everything(args.seed)  # Fix the seed for reproducibility.
-    if not args.test_only: train_multitask(args)
+    train_multitask(args)
     test_multitask(args)
