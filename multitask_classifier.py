@@ -77,11 +77,7 @@ class TaskCenter:
         self.avg_train_acc = []  # wrt epoch
         self.avg_dev_acc = []  # wrt epoch
 
-    def log_accuracy(self, train_acc, avg_train_acc, dev_acc, avg_dev_acc):
-        for name, acc in train_acc.items():
-            self.name_to_task[name].train_acc.append(acc)
-        self.avg_train_acc.append(avg_train_acc)
-
+    def log_accuracy(self, dev_acc, avg_dev_acc):
         for name, acc in dev_acc.items():
             self.name_to_task[name].dev_acc.append(acc)
         self.avg_dev_acc.append(avg_dev_acc)
@@ -300,6 +296,16 @@ def train_multitask(args):
         steps_e = sum([len(t.train.dataset) for t in tc.tasks])//args.batch_size # one pass through all the data
         steps_per_epoch = 6 if args.test_run else steps_e // 8
 
+        # calculate accuracy before training
+        dev_sentiment_accuracy, _, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
+                                                      model, device)
+
+        avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
+        dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
+        tc.log_accuracy(dev_acc, avg_dev_acc)
+
         for t in tc.tasks: t.step_counter = 0
         for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
@@ -345,27 +351,17 @@ def train_multitask(args):
                 optimizer.step()
         for t in tc.tasks: t.steps_in_epoch.append(t.step_counter)
 
-        train_sentiment_accuracy, _, _, \
-            train_paraphrase_accuracy, _, _, \
-            train_sts_corr, _, _ = model_eval_multitask(sst.train.dataloader, para.train.dataloader, sts.train.dataloader, model, device)
         dev_sentiment_accuracy, _, _, \
             dev_paraphrase_accuracy, _, _, \
             dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,model,device)
 
         avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
-        avg_train_acc = (train_sentiment_accuracy + train_paraphrase_accuracy + train_sts_corr) / 3
         if avg_dev_acc > best_avg_dev_acc:
             best_avg_dev_acc = avg_dev_acc
             save_model(model, optimizer, args, config, args.filepath)
-        train_acc = {'sst':train_sentiment_accuracy, 'para': train_paraphrase_accuracy, 'sts': train_sts_corr}
         dev_acc = {'sst':dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
-        tc.log_accuracy(train_acc, avg_train_acc, dev_acc, avg_dev_acc)
+        tc.log_accuracy(dev_acc, avg_dev_acc)
 
-        print(f"Epoch {epoch}:  train acc - "
-              f"sst::{train_sentiment_accuracy :.3f}, "
-              f"para::{train_paraphrase_accuracy :.3f}, "
-              f"sts::{train_sts_corr :.3f}"
-              f"avg::{avg_train_acc :.3f}")
         print(f"Epoch {epoch}:  dev acc - "
               f"sst::{dev_sentiment_accuracy :.3f}, "
               f"para::{dev_paraphrase_accuracy :.3f}, "
