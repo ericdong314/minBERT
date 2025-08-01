@@ -40,8 +40,7 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
-
-TQDM_DISABLE=False
+TQDM_DISABLE = False
 
 
 # Fix the random seed.
@@ -64,6 +63,7 @@ def cycle(iterable):
         for it in iterable:
             yield it
 
+
 class TaskCenter:
     def __init__(self):
         self.names = []
@@ -74,7 +74,7 @@ class TaskCenter:
             'para': lambda x, y: SentencePairDataset(x, y, isRegression=False),
             'sts': lambda x, y: SentencePairDataset(x, y, isRegression=True)
         }
-        self.avg_train_acc = []  # wrt epoch
+        self.avg_loss = []  # average loss across tasks
         self.avg_dev_acc = []  # wrt epoch
 
     def log_accuracy(self, dev_acc, avg_dev_acc):
@@ -82,15 +82,29 @@ class TaskCenter:
             self.name_to_task[name].dev_acc.append(acc)
         self.avg_dev_acc.append(avg_dev_acc)
 
-    def save_metrics(self):
-        attrs = ['sampling_probs', 'steps_in_epoch', 'train_acc', 'dev_acc']
-        tc_attrs = ['avg_train_acc', 'avg_dev_acc']
-        task_metrics = {task.name : {attr: getattr(task, attr) for attr in attrs} for task in self.tasks}
+    def log_loss(self, steps_per_epoch):
+        total_loss = 0
+        for t in self.tasks:
+            task_loss = t.total_loss_in_epoch / steps_per_epoch
+            t.loss.append(task_loss)
+            total_loss += task_loss
+        self.avg_loss.append(total_loss / len(self.tasks))
+
+    def save_metrics(self, run_id):
+        attrs = ['sampling_probs', 'steps_in_epoch', 'dev_acc', 'loss']
+        tc_attrs = ['avg_dev_acc', 'avg_loss']
+        task_metrics = {task.name: {attr: getattr(task, attr) for attr in attrs} for task in self.tasks}
         overall_metrics = {attr: getattr(self, attr) for attr in tc_attrs}
 
         os.makedirs("./metrics", exist_ok=True)
-        with open(f'./metrics/{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w', encoding="utf-8") as f:
+        with open(f'./metrics/{datetime.now().strftime("%Y%m%d_%H%M%S")}-{mode}-{run_id}.json', 'w', encoding="utf-8") as f:
             json.dump({'task_metrics': task_metrics, 'overall_metrics': overall_metrics}, f)
+
+    def new_epoch(self):
+        for t in self.tasks:
+            t.step_counter = 0
+            t.total_loss_in_epoch = 0
+
 
 class Task:
     def __init__(self, tc, name):
@@ -101,11 +115,11 @@ class Task:
         self.dataset_class = None
 
         self.step_counter = 0
+        self.total_loss_in_epoch = 0
         self.sampling_probs = []
         self.steps_in_epoch = []
-        self.train_acc = []
+        self.loss = []
         self.dev_acc = []
-
 
         self.tc.names.append(name)
         self.tc.tasks.append(self)
@@ -119,8 +133,6 @@ class Task:
         self.train.dataloader = DataLoader(self.train.dataset, sampler=RandomSampler(self.train.dataset),
                                            batch_size=args.batch_size, collate_fn=self.train.dataset.collate_fn)
         self.train.inf_loader = iter(cycle(self.train.dataloader))
-
-
 
     class DataBox:
         def __init__(self):
@@ -138,6 +150,7 @@ class MultitaskBERT(nn.Module):
     - Paraphrase detection (predict_paraphrase)
     - Semantic Textual Similarity (predict_similarity)
     '''
+
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
@@ -156,9 +169,8 @@ class MultitaskBERT(nn.Module):
         self.para_dense = torch.nn.Linear(config.hidden_size, 1)
         self.para_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
         self.sts_dense = torch.nn.Linear(config.hidden_size, 1)
-        self.sts_dense_siamese = torch.nn.Linear(config.hidden_size* 2, 1)
+        self.sts_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
         self.siamese = config.siamese
-
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -169,7 +181,6 @@ class MultitaskBERT(nn.Module):
         ### TODO
         return self.bert(input_ids, attention_mask)
 
-
     def predict_sentiment(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
@@ -179,7 +190,6 @@ class MultitaskBERT(nn.Module):
         ### TODO
         pooler_output = self.forward(input_ids, attention_mask)['pooler_output']
         return self.sst_dense(self.dropout(pooler_output))
-
 
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
@@ -200,7 +210,6 @@ class MultitaskBERT(nn.Module):
             concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
             return self.para_dense_siamese(self.dropout(concat)).squeeze(-1)
 
-
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
@@ -218,8 +227,6 @@ class MultitaskBERT(nn.Module):
             # Concatenate the embeddings
             concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
             return self.sts_dense_siamese(self.dropout(concat)).squeeze(-1)
-
-
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -245,14 +252,15 @@ def train_multitask(args):
     look at test_multitask below to see how you can use the custom torch `Dataset`s
     in datasets.py to load in examples from the Quora and SemEval datasets.
     '''
+
     def compute_alpha(epoch, total_epoch, alpha_start=1.0, alpha_end=0.2, linear_decay=True):
         """Annealing of alpha from alpha_start to alpha_end."""
         assert 0 <= epoch < total_epoch
         if linear_decay:
             drop = alpha_start - alpha_end
-            return alpha_start - drop * epoch / (total_epoch-1)
-        else: # Exponential Decay
-            ratio = epoch / (total_epoch-1)
+            return alpha_start - drop * epoch / (total_epoch - 1)
+        else:  # Exponential Decay
+            ratio = epoch / (total_epoch - 1)
             return alpha_start * ((alpha_end / alpha_start) ** ratio)
 
     def get_task_probs(alpha, sizes):
@@ -265,8 +273,12 @@ def train_multitask(args):
     sst = Task(tc, 'sst')
     para = Task(tc, 'para')
     sts = Task(tc, 'sts')
-    sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, args.test_run, split ='train')
-    sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, args.test_run, split ='dev')
+    sst.train.data, num_labels, para.train.data, sts.train.data = load_multitask_data(args.sst_train, args.para_train,
+                                                                                      args.sts_train, args.test_run,
+                                                                                      split='train')
+    sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev, args.para_dev,
+                                                                                args.sts_dev, args.test_run,
+                                                                                split='dev')
     for t in tc.tasks: t.load_data()
 
     # Init model.
@@ -287,27 +299,28 @@ def train_multitask(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_avg_dev_acc = 0
 
+    # calculate accuracy before training
+    dev_sentiment_accuracy, _, _, \
+        dev_paraphrase_accuracy, _, _, \
+        dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
+                                                  model, device)
+
+    avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
+    dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
+    tc.log_accuracy(dev_acc, avg_dev_acc)
+
     for epoch in range(3 if args.test_run else args.epochs):
+        tc.new_epoch()
         model.train()
         alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
         probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tc.tasks]))
-        for t,p in zip(tc.tasks, probs): t.sampling_probs.append(p)
+        for t, p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
-        steps_e = sum([len(t.train.dataset) for t in tc.tasks])//args.batch_size # one pass through all the data
+        steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
         steps_per_epoch = 6 if args.test_run else steps_e // 8
 
-        # calculate accuracy before training
-        dev_sentiment_accuracy, _, _, \
-            dev_paraphrase_accuracy, _, _, \
-            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
-                                                      model, device)
 
-        avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
-        dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
-        tc.log_accuracy(dev_acc, avg_dev_acc)
-
-        for t in tc.tasks: t.step_counter = 0
-        for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):   # total examples / batch_size
+        for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):  # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
             task.step_counter += 1
             batch = next(task.train.inf_loader)
@@ -329,13 +342,12 @@ def train_multitask(args):
                     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
                     loss = F.mse_loss(logits, b_labels.float(), reduction='mean')
 
-                else: # para
+                else:  # para
                     logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
                     loss = F.binary_cross_entropy_with_logits(logits, b_labels.float(), reduction='mean')
-
                 loss.backward()
                 optimizer.step()
-            else: # sst
+            else:  # sst
                 b_ids, b_mask, b_labels = (batch['token_ids'],
                                            batch['attention_mask'], batch['labels'])
 
@@ -349,25 +361,29 @@ def train_multitask(args):
 
                 loss.backward()
                 optimizer.step()
+            task.total_loss_in_epoch += loss.item()
         for t in tc.tasks: t.steps_in_epoch.append(t.step_counter)
 
         dev_sentiment_accuracy, _, _, \
             dev_paraphrase_accuracy, _, _, \
-            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,model,device)
+            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
+                                                      model, device)
 
         avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
         if avg_dev_acc > best_avg_dev_acc:
             best_avg_dev_acc = avg_dev_acc
             save_model(model, optimizer, args, config, args.filepath)
-        dev_acc = {'sst':dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
+        dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
+        tc.log_loss(steps_per_epoch)
         tc.log_accuracy(dev_acc, avg_dev_acc)
 
         print(f"Epoch {epoch}:  dev acc - "
               f"sst::{dev_sentiment_accuracy :.3f}, "
               f"para::{dev_paraphrase_accuracy :.3f}, "
-              f"sts::{dev_sts_corr :.3f}" 
+              f"sts::{dev_sts_corr :.3f}"
               f"avg::{avg_dev_acc :.3f}")
-    tc.save_metrics()
+    tc.save_metrics(args.run_id)
+
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -381,11 +397,11 @@ def test_multitask(args):
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
 
-        sst_test_data, num_labels,para_test_data, sts_test_data = \
-            load_multitask_data(args.sst_test,args.para_test, args.sts_test, args.test_run, split='test')
+        sst_test_data, num_labels, para_test_data, sts_test_data = \
+            load_multitask_data(args.sst_test, args.para_test, args.sts_test, args.test_run, split='test')
 
-        sst_dev_data, num_labels,para_dev_data, sts_dev_data = \
-            load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, args.test_run, split='dev')
+        sst_dev_data, num_labels, para_dev_data, sts_dev_data = \
+            load_multitask_data(args.sst_dev, args.para_dev, args.sts_dev, args.test_run, split='dev')
 
         sst_test_data = SentenceClassificationTestDataset(sst_test_data, args)
         sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -411,17 +427,17 @@ def test_multitask(args):
         sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                         collate_fn=sts_dev_data.collate_fn)
 
-        dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
+        dev_sentiment_accuracy, dev_sst_y_pred, dev_sst_sent_ids, \
             dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
             dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
-                                                                    para_dev_dataloader,
-                                                                    sts_dev_dataloader, model, device)
+                                                                                  para_dev_dataloader,
+                                                                                  sts_dev_dataloader, model, device)
 
         test_sst_y_pred, \
             test_sst_sent_ids, test_para_y_pred, test_para_sent_ids, test_sts_y_pred, test_sts_sent_ids = \
-                model_eval_test_multitask(sst_test_dataloader,
-                                          para_test_dataloader,
-                                          sts_test_dataloader, model, device)
+            model_eval_test_multitask(sst_test_dataloader,
+                                      para_test_dataloader,
+                                      sts_test_dataloader, model, device)
 
         with open(args.sst_dev_out, "w+") as f:
             print(f"dev sentiment acc :: {dev_sentiment_accuracy :.3f}")
@@ -472,7 +488,7 @@ def get_args():
     parser.add_argument("--sts_test", type=str, default="data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
@@ -493,14 +509,24 @@ def get_args():
 
     # new args
     parser.add_argument('--siamese', action='store_true', help='use siamese network instead of cat')
+    parser.add_argument('--cosine', action='store_true', help='use cosine similarity')
     parser.add_argument('--test_run', action='store_true', help='skeletal run for local test')
+    parser.add_argument('--num_runs', type=int, default=5, help='number of runs')
     args = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
     args = get_args()
-    siamese = 'siamese'if args.siamese else 'concate'
-    args.filepath = f'{siamese}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
-    train_multitask(args)
-    test_multitask(args)
+    if args.siamese:
+        if args.cosine:
+            mode = 'siamese-cosine'
+        else:
+            mode = 'siamese-mse'
+    else:
+        mode = 'concatenation'
+    args.filepath = f'{mode}-{args.epochs}-{args.batch_size}-{args.lr}-multitask.pt'  # Save path.
+
+    for run in range(args.num_runs):
+        args.run_id = run
+        train_multitask(args)
