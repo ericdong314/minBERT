@@ -171,6 +171,7 @@ class MultitaskBERT(nn.Module):
         self.para_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
         self.sts_dense = torch.nn.Linear(config.hidden_size, 1)
         self.sts_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
+        self.sts_scale = torch.nn.Linear(1, 1)
         self.siamese = config.siamese
         self.cosine = config.cosine
 
@@ -209,10 +210,12 @@ class MultitaskBERT(nn.Module):
             pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
             pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
             if self.cosine:
-                pooler_output_1
-            # Concatenate the embeddings
-            concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
-            return self.para_dense_siamese(self.dropout(concat)).squeeze(-1)
+                cos_sim = F.cosine_similarity(pooler_output_1, pooler_output_2, dim=1)
+                return cos_sim
+            else:
+                # Concatenate the embeddings
+                concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+                return self.para_dense_siamese(self.dropout(concat)).squeeze(-1)
 
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
@@ -228,9 +231,14 @@ class MultitaskBERT(nn.Module):
             # Get [CLS] embeddings for both sentences
             pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
             pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
-            # Concatenate the embeddings
-            concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
-            return self.sts_dense_siamese(self.dropout(concat)).squeeze(-1)
+            if self.cosine:
+                cos_sim = F.cosine_similarity(pooler_output_1, pooler_output_2, dim=1)
+                score = self.sts_scale(cos_sim.unsqueeze(-1)).squeeze(-1)
+                return score
+            else:
+                # Concatenate the embeddings
+                concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
+                return self.sts_dense_siamese(self.dropout(concat)).squeeze(-1)
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -291,7 +299,9 @@ def train_multitask(args):
               'hidden_size': 768,
               'data_dir': '.',
               'fine_tune_mode': args.fine_tune_mode,
-              'siamese': args.siamese}
+              'siamese': args.siamese,
+              'cosine': args.cosine
+              }
 
     config = SimpleNamespace(**config)
 
@@ -302,17 +312,6 @@ def train_multitask(args):
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
     best_avg_dev_acc = 0
-
-    # calculate accuracy before training
-    with torch.no_grad():
-        dev_sentiment_accuracy, _, _, \
-            dev_paraphrase_accuracy, _, _, \
-            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
-                                                      model, device)
-
-    avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
-    dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
-    tc.log_accuracy(dev_acc, avg_dev_acc)
 
     for epoch in range(3 if args.test_run else args.epochs):
         tc.new_epoch()
