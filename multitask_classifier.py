@@ -172,6 +172,7 @@ class MultitaskBERT(nn.Module):
         self.sts_dense = torch.nn.Linear(config.hidden_size, 1)
         self.sts_dense_siamese = torch.nn.Linear(config.hidden_size * 2, 1)
         self.siamese = config.siamese
+        self.cosine = config.cosine
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -207,6 +208,8 @@ class MultitaskBERT(nn.Module):
             # Get [CLS] embeddings for both sentences
             pooler_output_1 = self.forward(input_ids_1, attention_mask_1)['pooler_output']
             pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
+            if self.cosine:
+                pooler_output_1
             # Concatenate the embeddings
             concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
             return self.para_dense_siamese(self.dropout(concat)).squeeze(-1)
@@ -314,12 +317,12 @@ def train_multitask(args):
     for epoch in range(3 if args.test_run else args.epochs):
         tc.new_epoch()
         model.train()
-        alpha = compute_alpha(epoch, args.epochs, 0.8, 0.1)
+        alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2)
         probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tc.tasks]))
         for t, p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
-        # steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
-        steps_per_epoch = 6 if args.test_run else 1000
+        steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
+        steps_per_epoch = 6 if args.test_run else steps_e
 
         for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):  # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
@@ -490,7 +493,7 @@ def get_args():
     parser.add_argument("--sts_test", type=str, default="data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="full-model")
@@ -505,7 +508,7 @@ def get_args():
     parser.add_argument("--sts_dev_out", type=str, default="predictions/sts-dev-output.csv")
     parser.add_argument("--sts_test_out", type=str, default="predictions/sts-test-output.csv")
 
-    parser.add_argument("--batch_size", help='sst: 64 can fit a 12GB GPU', type=int, default=8)
+    parser.add_argument("--batch_size", help='sst: 64 can fit a 12GB GPU', type=int, default=32)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
