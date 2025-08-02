@@ -97,7 +97,8 @@ class TaskCenter:
         overall_metrics = {attr: getattr(self, attr) for attr in tc_attrs}
 
         os.makedirs("./metrics", exist_ok=True)
-        with open(f'./metrics/{datetime.now().strftime("%Y%m%d_%H%M%S")}-{mode}-{run_id}.json', 'w', encoding="utf-8") as f:
+        with open(f'./metrics/{datetime.now().strftime("%Y%m%d_%H%M%S")}-{mode}-{run_id}.json', 'w',
+                  encoding="utf-8") as f:
             json.dump({'task_metrics': task_metrics, 'overall_metrics': overall_metrics}, f)
 
     def new_epoch(self):
@@ -300,10 +301,11 @@ def train_multitask(args):
     best_avg_dev_acc = 0
 
     # calculate accuracy before training
-    dev_sentiment_accuracy, _, _, \
-        dev_paraphrase_accuracy, _, _, \
-        dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
-                                                  model, device)
+    with torch.no_grad():
+        dev_sentiment_accuracy, _, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
+                                                      model, device)
 
     avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
     dev_acc = {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr}
@@ -312,13 +314,12 @@ def train_multitask(args):
     for epoch in range(3 if args.test_run else args.epochs):
         tc.new_epoch()
         model.train()
-        alpha = compute_alpha(epoch, args.epochs, 1.0, 0.2, linear_decay=True)
+        alpha = compute_alpha(epoch, args.epochs, 0.8, 0.1)
         probs = get_task_probs(alpha, np.array([len(t.train.dataset) for t in tc.tasks]))
         for t, p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
-        steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
-        steps_per_epoch = 6 if args.test_run else steps_e // 8
-
+        # steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
+        steps_per_epoch = 6 if args.test_run else 1000
 
         for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):  # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
@@ -364,10 +365,11 @@ def train_multitask(args):
             task.total_loss_in_epoch += loss.item()
         for t in tc.tasks: t.steps_in_epoch.append(t.step_counter)
 
-        dev_sentiment_accuracy, _, _, \
-            dev_paraphrase_accuracy, _, _, \
-            dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
-                                                      model, device)
+        with torch.no_grad():
+            dev_sentiment_accuracy, _, _, \
+                dev_paraphrase_accuracy, _, _, \
+                dev_sts_corr, _, _ = model_eval_multitask(sst.dev.dataloader, para.dev.dataloader, sts.dev.dataloader,
+                                                          model, device)
 
         avg_dev_acc = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr) / 3
         if avg_dev_acc > best_avg_dev_acc:
@@ -380,7 +382,7 @@ def train_multitask(args):
         print(f"Epoch {epoch}:  dev acc - "
               f"sst::{dev_sentiment_accuracy :.3f}, "
               f"para::{dev_paraphrase_accuracy :.3f}, "
-              f"sts::{dev_sts_corr :.3f}"
+              f"sts::{dev_sts_corr :.3f}, "
               f"avg::{avg_dev_acc :.3f}")
     tc.save_metrics(args.run_id)
 
@@ -503,7 +505,7 @@ def get_args():
     parser.add_argument("--sts_dev_out", type=str, default="predictions/sts-dev-output.csv")
     parser.add_argument("--sts_test_out", type=str, default="predictions/sts-test-output.csv")
 
-    parser.add_argument("--batch_size", help='sst: 64 can fit a 12GB GPU', type=int, default=32)
+    parser.add_argument("--batch_size", help='sst: 64 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
