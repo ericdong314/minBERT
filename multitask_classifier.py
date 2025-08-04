@@ -292,9 +292,9 @@ def train_multitask(args):
     sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev, args.para_dev,
                                                                                 args.sts_dev, args.test_run,
                                                                                 split='dev')
+    for t in tc.tasks: t.load_data()
     if args.single_task != DISABLED:
         tc.tasks = [tc.name_to_task[args.single_task]]
-    for t in tc.tasks: t.load_data()
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
