@@ -324,7 +324,7 @@ def train_multitask(args):
         for t, p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
         steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
-        steps_per_epoch = 6 if args.test_run else 1000
+        steps_per_epoch = 6 if args.test_run else steps_e
 
         for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):  # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
@@ -530,7 +530,7 @@ if __name__ == "__main__":
         if args.cosine:
             mode = 'siamese-cosine'
         else:
-            mode = 'siamese-mse'
+            mode = 'siamese'
     else:
         mode = 'concatenation'
     args.filepath = f'{mode}-{args.epochs}-{args.batch_size}-{args.lr}-multitask.pt'  # Save path.
