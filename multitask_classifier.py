@@ -350,7 +350,7 @@ def train_multitask(args):
 
                 else:  # para
                     preds = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                    loss = F.binary_cross_entropy(preds, b_labels.float(), reduction='mean')
+                    loss = F.binary_cross_entropy_with_logits(preds, b_labels.float(), reduction='mean')
                 loss.backward()
                 optimizer.step()
             else:  # sst
