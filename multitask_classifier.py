@@ -212,7 +212,7 @@ class MultitaskBERT(nn.Module):
             pooler_output_2 = self.forward(input_ids_2, attention_mask_2)['pooler_output']
             if self.cosine:
                 cos_sim = F.cosine_similarity(pooler_output_1, pooler_output_2, dim=1)
-                return cos_sim
+                return (cos_sim + 1) / 2
             else:
                 # Concatenate the embeddings
                 concat = torch.cat([pooler_output_1, pooler_output_2], dim=1)
@@ -345,12 +345,12 @@ def train_multitask(args):
 
                 optimizer.zero_grad()
                 if task.name == 'sts':
-                    logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                    loss = F.mse_loss(logits, b_labels.float(), reduction='mean')
+                    preds = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                    loss = F.mse_loss(preds, b_labels.float(), reduction='mean')
 
                 else:  # para
-                    logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                    loss = F.binary_cross_entropy_with_logits(logits, b_labels.float(), reduction='mean')
+                    preds = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                    loss = F.binary_cross_entropy(preds, b_labels.float(), reduction='mean')
                 loss.backward()
                 optimizer.step()
             else:  # sst
@@ -362,8 +362,8 @@ def train_multitask(args):
                 b_labels = b_labels.to(device)
 
                 optimizer.zero_grad()
-                logits = model.predict_sentiment(b_ids, b_mask)
-                loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+                preds = model.predict_sentiment(b_ids, b_mask)
+                loss = F.cross_entropy(preds, b_labels.view(-1), reduction='sum') / args.batch_size
 
                 loss.backward()
                 optimizer.step()
