@@ -57,6 +57,7 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
+DISABLED = 'DISABLED'
 
 def cycle(iterable):
     while True:
@@ -291,6 +292,8 @@ def train_multitask(args):
     sst.dev.data, num_labels, para.dev.data, sts.dev.data = load_multitask_data(args.sst_dev, args.para_dev,
                                                                                 args.sts_dev, args.test_run,
                                                                                 split='dev')
+    if args.single_task != DISABLED:
+        tc.tasks = [tc.name_to_task[args.single_task]]
     for t in tc.tasks: t.load_data()
 
     # Init model.
@@ -321,7 +324,7 @@ def train_multitask(args):
         for t, p in zip(tc.tasks, probs): t.sampling_probs.append(p)
 
         steps_e = sum([len(t.train.dataset) for t in tc.tasks]) // args.batch_size  # one pass through all the data
-        steps_per_epoch = 6 if args.test_run else steps_e
+        steps_per_epoch = 6 if args.test_run else 1000
 
         for step in tqdm(range(steps_per_epoch), f'train-{epoch}', disable=TQDM_DISABLE):  # total examples / batch_size
             task = np.random.choice(tc.tasks, p=probs)
@@ -516,6 +519,7 @@ def get_args():
     parser.add_argument('--cosine', action='store_true', help='use cosine similarity')
     parser.add_argument('--test_run', action='store_true', help='skeletal run for local test')
     parser.add_argument('--num_runs', type=int, default=5, help='number of runs')
+    parser.add_argument('--single_task', type=str, default=DISABLED)
     args = parser.parse_args()
     return args
 
